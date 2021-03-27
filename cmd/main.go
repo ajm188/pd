@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/PagerDuty/go-pagerduty"
 	"github.com/spf13/cobra"
+
+	"github.com/ajm188/pd"
 )
 
 var (
@@ -32,16 +36,35 @@ func run() error {
 	now := time.Now().UTC()
 
 	client := pagerduty.NewClient(authToken)
+
+	entriesByUser := map[string][]*pd.RenderedScheduleEntry{}
+
 	for _, schedID := range scheduleIDs {
 		sched, err := client.GetSchedule(schedID, pagerduty.GetScheduleOptions{
 			Since: now.Add(since).Format(time.RFC3339),
 			Until: now.Add(until).Format(time.RFC3339),
 		})
 		if err != nil {
+			// TODO: log and skip (surface back to caller ... somehow)
 			return err
 		}
 
-		data, err := json.Marshal(sched.FinalSchedule.RenderedScheduleEntries)
+		entries, err := pd.GetRenderedScheduleEntries(sched)
+		if err != nil {
+			// TODO: log and skip (surface back to caller ... somehow)
+			return err
+		}
+
+		for _, entry := range entries {
+			userEntries, ok := entriesByUser[entry.User.ID]
+			if !ok {
+				userEntries = []*pd.RenderedScheduleEntry{}
+			}
+
+			entriesByUser[entry.User.ID] = append(userEntries, entry)
+		}
+
+		data, err := json.Marshal(entries)
 		if err != nil {
 			return err
 		}
@@ -49,7 +72,45 @@ func run() error {
 		fmt.Printf("%s\n", data)
 	}
 
+	findConflicts(entriesByUser)
+
 	return nil
+}
+
+func findConflicts(entriesByUser map[string][]*pd.RenderedScheduleEntry) {
+	var wg sync.WaitGroup
+
+	for userID, entries := range entriesByUser {
+		wg.Add(1)
+
+		go func(userID string, entries []*pd.RenderedScheduleEntry) {
+			defer wg.Done()
+
+			conflicts := [][2]*pd.RenderedScheduleEntry{}
+
+			sort.Slice(entries, func(i, j int) bool {
+				return entries[i].Start.Before(entries[j].Start)
+			})
+
+			for i, left := range entries {
+				for j := i + 1; j < len(entries); j++ {
+					right := entries[j]
+
+					if !right.Start.Before(left.End) { // if left.End <= right.Start
+						// All good, RHS doesn't start until at least after LHS
+						// ends. Stop scanning for conflicts related to LHS.
+						break
+					}
+
+					log.Printf("CONFLICT: %s is in both %s and %s from %s to %s\n", left.User.Summary, left.Schedule, right.Schedule, right.Start, left.End)
+
+					conflicts = append(conflicts, [2]*pd.RenderedScheduleEntry{left, right})
+				}
+			}
+		}(userID, entries)
+	}
+
+	wg.Wait()
 }
 
 func main() {
