@@ -102,7 +102,7 @@ func findConflicts(entriesByUser map[string][]*pd.RenderedScheduleEntry) {
 						break
 					}
 
-					log.Printf("CONFLICT: %s is in both %s and %s from %s to %s\n", left.User.Summary, left.Schedule, right.Schedule, right.Start, left.End)
+					log.Printf("CONFLICT: %s is in both %q and %q from %s to %s\n", left.User.Summary, left.Schedule, right.Schedule, right.Start, left.End)
 
 					conflicts = append(conflicts, [2]*pd.RenderedScheduleEntry{left, right})
 				}
