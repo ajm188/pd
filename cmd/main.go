@@ -1,11 +1,8 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"sort"
-	"sync"
 	"time"
 
 	"github.com/PagerDuty/go-pagerduty"
@@ -34,9 +31,7 @@ var (
 
 func run() error {
 	now := time.Now().UTC()
-
 	client := pagerduty.NewClient(authToken)
-
 	allEntries := []*pd.RenderedScheduleEntry{}
 
 	schedules, failures, err := pd.GetSchedules(client, scheduleIDs, pagerduty.GetScheduleOptions{
@@ -59,58 +54,14 @@ func run() error {
 		}
 
 		allEntries = append(allEntries, entries...)
-
-		data, err := json.Marshal(entries)
-		if err != nil {
-			return err
-		}
-
-		fmt.Printf("%s\n", data)
 	}
 
-	entriesByUser := pd.RenderedScheduleEntries(allEntries).GroupBy(func(entry *pd.RenderedScheduleEntry) string {
-		return entry.User.ID
-	})
-
-	findConflicts(entriesByUser)
+	// This returns a mapping of user.ID to their list of conflicts, but also
+	// logs, so for the purposes of a CLI tool we don't actually need to do
+	// anything with the value.
+	pd.FindConflictsByUser(allEntries)
 
 	return nil
-}
-
-func findConflicts(entriesByUser map[string][]*pd.RenderedScheduleEntry) {
-	var wg sync.WaitGroup
-
-	for userID, entries := range entriesByUser {
-		wg.Add(1)
-
-		go func(userID string, entries []*pd.RenderedScheduleEntry) {
-			defer wg.Done()
-
-			conflicts := [][2]*pd.RenderedScheduleEntry{}
-
-			sort.Slice(entries, func(i, j int) bool {
-				return entries[i].Start.Before(entries[j].Start)
-			})
-
-			for i, left := range entries {
-				for j := i + 1; j < len(entries); j++ {
-					right := entries[j]
-
-					if !right.Start.Before(left.End) { // if left.End <= right.Start
-						// All good, RHS doesn't start until at least after LHS
-						// ends. Stop scanning for conflicts related to LHS.
-						break
-					}
-
-					log.Printf("CONFLICT: %s is in both %q and %q from %s to %s\n", left.User.Summary, left.Schedule, right.Schedule, right.Start, left.End)
-
-					conflicts = append(conflicts, [2]*pd.RenderedScheduleEntry{left, right})
-				}
-			}
-		}(userID, entries)
-	}
-
-	wg.Wait()
 }
 
 func main() {
