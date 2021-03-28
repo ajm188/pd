@@ -37,32 +37,28 @@ func run() error {
 
 	client := pagerduty.NewClient(authToken)
 
-	entriesByUser := map[string][]*pd.RenderedScheduleEntry{}
+	allEntries := []*pd.RenderedScheduleEntry{}
 
-	for _, schedID := range scheduleIDs {
-		sched, err := client.GetSchedule(schedID, pagerduty.GetScheduleOptions{
-			Since: now.Add(since).Format(time.RFC3339),
-			Until: now.Add(until).Format(time.RFC3339),
-		})
+	schedules, failures, err := pd.GetSchedules(client, scheduleIDs, pagerduty.GetScheduleOptions{
+		Since: now.Add(since).Format(time.RFC3339),
+		Until: now.Add(until).Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, failure := range failures { // TODO: do this in a background goroutine
+		log.Println(failure)
+	}
+
+	for _, schedule := range schedules {
+		entries, err := pd.GetRenderedScheduleEntries(schedule)
 		if err != nil {
 			// TODO: log and skip (surface back to caller ... somehow)
 			return err
 		}
 
-		entries, err := pd.GetRenderedScheduleEntries(sched)
-		if err != nil {
-			// TODO: log and skip (surface back to caller ... somehow)
-			return err
-		}
-
-		for _, entry := range entries {
-			userEntries, ok := entriesByUser[entry.User.ID]
-			if !ok {
-				userEntries = []*pd.RenderedScheduleEntry{}
-			}
-
-			entriesByUser[entry.User.ID] = append(userEntries, entry)
-		}
+		allEntries = append(allEntries, entries...)
 
 		data, err := json.Marshal(entries)
 		if err != nil {
@@ -71,6 +67,10 @@ func run() error {
 
 		fmt.Printf("%s\n", data)
 	}
+
+	entriesByUser := pd.RenderedScheduleEntries(allEntries).GroupBy(func(entry *pd.RenderedScheduleEntry) string {
+		return entry.User.ID
+	})
 
 	findConflicts(entriesByUser)
 
